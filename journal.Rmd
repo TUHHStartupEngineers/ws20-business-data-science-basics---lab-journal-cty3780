@@ -170,17 +170,509 @@ sales_by_year_cat_1_tbl %>%
 
 Last compiled: `r Sys.Date()`
 
-I'm writing this tutorial going from the top down. And, this is how it will be printed. So, notice the second post is second in the list. If you want your most recent post to be at the top, then make a new post starting at the top. If you want the oldest first, do, then keep adding to the bottom
-
-# Adding R stuff
-
-So far this is just a blog where you can write in plain text and serve your writing to a webpage. One of the main purposes of this lab journal is to record your progress learning R. The reason I am asking you to use this process is because you can both make a website, and a lab journal, and learn R all in R-studio. This makes everything really convenient and in the same place. 
-
-So, let's say you are learning how to make a histogram in R. For example, maybe you want to sample 100 numbers from a normal distribution with mean = 0, and standard deviation = 1, and then you want to plot a histogram. You can do this right here by using an r code block, like this:
-
+## Acquiring data about character appearences in Breaking Bad
+### API provided by https://breakingbadapi.com/
 ```{r}
-samples <- rnorm(100, mean=0, sd=1)
-hist(samples)
+library(tidyverse) # Main Package - Loads dplyr, purrr, etc.
+library(rvest)     # HTML Hacking & Web Scraping
+library(xopen)     # Quickly opening URLs
+library(jsonlite)  # converts JSON files to R objects
+library(glue)      # concatenate strings
+library(stringi)   # character string/text processing
+library(httr)
+
+#Get Breaking Bad characters
+BB <- GET("https://www.breakingbadapi.com/api/characters/")
+character_table <-
+BB %>% 
+    .$content %>% 
+    rawToChar() %>% 
+    fromJSON()%>%
+    tibble()
+
+character_table_wrapped <-
+  character_table %>%
+  select(char_id, name, occupation) %>%
+  slice(1:10) %>%  
+  separate(col    = name,
+           into   = c("name", "surname"),
+           sep    = " ") 
+
+# Retrieving random Quotes
+numbers <- c(1:10)
+list_quotes <- tibble(char_id = 0, quote = "")
+for (i in numbers) {
+name <- character_table_wrapped[i,2]
+surname <- character_table_wrapped[i,3] 
+api <- glue("https://www.breakingbadapi.com/api/quote/random?author={name}+{surname}")
+if((i <= 3 || i> 6) && i!=9 ){
+new_entry <- GET(api)%>% 
+    .$content %>% 
+    rawToChar() %>%
+    fromJSON()%>%
+    tibble()
+} else {
+ new_entry <- tibble( 1, quote ="No Quote found" )
+}
+list_quotes <- list_quotes %>%
+  add_row(char_id = i, new_entry[2])
+}
+list_quotes <- list_quotes %>%
+  slice(2:11)
+
+table_with_quotes <- character_table_wrapped %>% left_join(list_quotes)
+
+table_with_quotes
 ```
 
-When you knit this R Markdown document, you will see that the histogram is printed to the page, along with the R code. This document can be set up to hide the R code in the webpage, just delete the comment (hashtag) from the cold folding option in the yaml header up top. For purposes of letting yourself see the code, and me see the code, best to keep it the way that it is. You'll learn that all of these things and more can be customized in each R code block.
+## Acquiring data from Rose Bikes
+
+```{r}
+# 1.1 COLLECT PRODUCT FAMILIES ----
+
+url_home          <-  "https://www.rosebikes.de/fahrr%C3%A4der/rennrad"
+
+# Read in the HTML for the entire webpage
+html_home         <- read_html(url_home)
+
+# Web scrape the title classes for names
+bikes_rennrad_tbl <- html_home %>%
+
+                 # Get the nodes for the title ...
+html_nodes(css = ".catalog-category-bikes__title-text") %>%
+                 # ...and extract the name
+                 html_text() %>%
+                 str_remove_all("\n") %>%
+                 enframe(name = "position", value = "Name_Bike") 
+
+bikes_prices_tbl <- html_home %>%
+
+                 # Get the nodes for the prices
+html_nodes(css = ".catalog-category-bikes__price-title") %>%
+                 # ...and extract the information 
+                 html_text()%>%
+                 str_remove_all("\n") %>%  
+                 str_remove_all("\200") %>%
+                 str_remove_all(",00") %>%
+                 str_remove_all("ab ")%>%
+                 readr::parse_number() %>%
+                 enframe(name = "position", value = "price") %>%
+                 mutate(price = price * 1000)
+
+
+
+
+bikes_rennrad_price_tbl <- 
+  bikes_rennrad_tbl %>%
+  left_join(bikes_prices_tbl)
+
+bikes_rennrad_price_tbl
+```
+
+# Data Wrangling
+In here data about US-Patents is presented
+
+## Patent Dominance: What US company / corporation has the most patents?
+Last compiled: `r Sys.Date()`
+
+```{r patents_1, eval=FALSE}
+library(vroom)
+library(data.table)
+
+#Recipe for extracting "assignee"
+col_types <- list(
+  id = col_character(),
+  type = col_double(),
+  name_first = col_character(),
+  name_last = col_character(),
+  organization = col_character()
+)
+
+assignee <- vroom(
+            file       = "Patent_data/assignee.tsv", 
+            delim      = "\t", 
+            col_types  = col_types,
+            na         = c("", "NA", "NULL")
+        )
+
+# Recipe for extracting "patent_assigne
+col_types <- list(
+  patent_id = col_character(),
+  assignee_id = col_character(),
+  location_id = col_character()
+)
+
+patent_assignee <- vroom(
+            file       = "Patent_data/patent_assignee.tsv", 
+            delim      = "\t", 
+            col_types  = col_types,
+            na         = c("", "NA", "NULL")
+        )
+
+# Set to data.table
+setDT(assignee)
+setDT(patent_assignee)
+
+# renaming to fit 
+setnames(patent_assignee, "assignee_id", "id")
+# Joining Data 
+combined_data <- merge(x = assignee, y = patent_assignee, 
+                       by     =  "id" , 
+                       all.x = TRUE, 
+                       all.y = FALSE)
+
+setkey(combined_data, "id")
+key(combined_data)
+
+setorderv(combined_data,"id")
+
+# creating list of top ten patent holders
+patent_holders <- combined_data[type == 2][, .(number_of_patents = .N), by = id][order(-number_of_patents)][1:10]
+
+list_final <- merge(x = patent_holders, y = assignee, 
+                       by     =  "id" , 
+                       all.x = TRUE, 
+                       all.y = FALSE)
+patents_1_tbl <- list_final[order(-number_of_patents)][, c("id", "number_of_patents", "organization")]
+
+
+```
+```{r patents_1_tbl}
+patents_1_tbl 
+```
+## Recent patent acitivity: What US company had the most patents granted in 2019?
+Last compiled: `r Sys.Date()`
+
+
+```{r patents_2 , eval=FALSE}
+library(vroom)
+library(data.table)
+
+#Recipe for extracting "assignee"
+col_types <- list(
+  id = col_character(),
+  type = col_double(),
+  name_first = col_character(),
+  name_last = col_character(),
+  organization = col_character()
+)
+
+assignee <- vroom(
+            file       = "Patent_data/assignee.tsv", 
+            delim      = "\t", 
+            col_types  = col_types,
+            na         = c("", "NA", "NULL")
+        )
+
+# Recipe for extracting "patent_assignee"
+col_types <- list(
+  patent_id = col_character(),
+  assignee_id = col_character(),
+  location_id = col_skip()
+)
+
+patent_assignee <- vroom(
+            file       = "Patent_data/patent_assignee.tsv", 
+            delim      = "\t", 
+            col_types  = col_types,
+            na         = c("", "NA", "NULL")
+        )
+
+# Recipe for extracting "patent"
+col_types <- list(
+  id = col_character(),
+  type = col_skip(),
+  number = col_character(),
+  country = col_skip(),
+  date = col_date("%Y-%m-%d"),
+  abstract = col_skip(),
+  title = col_skip(),
+  kind = col_skip(),
+  num_claims = col_skip(),
+  filename = col_skip(),
+  withdrawn = col_skip()
+)
+
+patent <- vroom(
+            file       = "Patent_data/patent.tsv", 
+            delim      = "\t", 
+            col_types  = col_types,
+            na         = c("", "NA", "NULL")
+        )
+
+# Set to data.table
+setDT(assignee)
+setDT(patent_assignee)
+setDT(patent)
+
+# renaming to fit 
+setnames(assignee, "id", "assignee_id")
+# Joining Data 
+combined_data_assignee <- merge(x = assignee, y = patent_assignee, 
+                       by     =  "assignee_id" , 
+                       all.x = TRUE, 
+                       all.y = FALSE)
+
+# renaming to fit 
+setnames(patent,"number", "patent_id" )
+# Joining Data 
+combined_data <- merge(x = combined_data_assignee, y = patent, 
+                       by     =  "patent_id" , 
+                       all.x = TRUE, 
+                       all.y = FALSE)
+
+
+# creating list of top ten patent holders
+patent_holders_2019 <- combined_data[as.numeric(format(date,'%Y')) == 2019][type == 2][, .(number_patents_2019 = .N), by = assignee_id][order(-number_patents_2019)][1:10]
+
+list_final <- merge(x = patent_holders_2019, y = assignee, 
+                       by     =  "assignee_id" , 
+                       all.x = TRUE, 
+                       all.y = FALSE)
+patents_2_tbl <- list_final[order(-number_patents_2019)][, c("assignee_id", "number_patents_2019", "organization")]
+
+```
+```{r patents_2_tbl}
+patents_2_tbl
+```
+
+## Innovation in Tech: What is the most innovative tech sector?
+Last compiled: `r Sys.Date()`
+
+### For the top 10 companies (worldwide) with the most patents, what are the top 5 USPTO tech main classes?
+```{r patents_3 , eval=FALSE}
+library(vroom)
+library(data.table)
+
+#Recipe for extracting "assignee"
+col_types <- list(
+  id = col_character(),
+  type = col_double(),
+  name_first = col_character(),
+  name_last = col_character(),
+  organization = col_character()
+)
+
+assignee <- vroom(
+            file       = "Patent_data/assignee.tsv", 
+            delim      = "\t", 
+            col_types  = col_types,
+            na         = c("", "NA", "NULL")
+        )
+
+# Recipe for extracting "patent_assignee"
+col_types <- list(
+  patent_id = col_character(),
+  assignee_id = col_character(),
+  location_id = col_skip()
+)
+
+patent_assignee <- vroom(
+            file       = "Patent_data/patent_assignee.tsv", 
+            delim      = "\t", 
+            col_types  = col_types,
+            na         = c("", "NA", "NULL")
+        )
+
+# Recipe for extracting "uspc"
+col_types <- list(
+  uuid = col_skip(),
+  patent_id = col_character(),
+  mainclass_id = col_character(),
+  subclass_id = col_skip(),
+  sequence = col_skip()
+)
+
+uspc <- vroom(
+            file       = "Patent_data/uspc.tsv", 
+            delim      = "\t", 
+            col_types  = col_types,
+            na         = c("", "NA", "NULL")
+        )
+
+# Set to data.table
+setDT(assignee)
+setDT(patent_assignee)
+setDT(uspc)
+
+# renaming to fit 
+setnames(assignee, "id", "assignee_id")
+# Joining Data 
+combined_data_assignee <- merge(x = assignee, y = patent_assignee, 
+                       by     =  "assignee_id" , 
+                       all.x = TRUE, 
+                       all.y = FALSE)
+
+# creating list of top ten patent holders worldwide
+patent_holders_ww <- combined_data_assignee[type == 2||3][, .(number_of_patents = .N), by = assignee_id][order(-number_of_patents)][1:10]
+
+
+
+
+
+# For loop for getting classes of all 10 companies
+numbers <- c(1:10)
+for (i in numbers) {
+
+  temp_patent_holder <- patent_assignee[assignee_id == patent_holders_ww[i,1]]
+
+  combined_data_types <- merge(x = temp_patent_holder, y = uspc,
+                         by     =  "patent_id" , 
+                        all.x = TRUE, 
+                        all.y = FALSE)
+  if(i ==1 ){
+   result <- combined_data_types[, .(number_of_mainclasses = .N), by = mainclass_id]
+  } else{
+    result <-  rbindlist(list(result, combined_data_types[, .(number_of_mainclasses = .N), by = mainclass_id]))[, lapply(.SD, X = sum, na.rm = TRUE), by = mainclass_id]
+  }
+}
+
+patents_3_tbl <- result[order(-number_of_mainclasses)][2:11]
+```
+```{r patents_3_tbl}
+patents_3_tbl
+```
+# Data visualization
+
+## Mapping of the time course of cumultative Covid-19 cases:
+
+```{r covidcases, fig.width=15, fig.height=9}
+library(tidyverse)
+library(lubridate)
+
+covid_data_tbl <- read_csv("https://opendata.ecdc.europa.eu/covid19/casedistribution/csv")
+countries_of_interest <- c("Germany","United_Kingdom", "France", "Spain", "United_States_of_America")
+monate <- ymd(c(20200101,20200201,20200301,20200401,20200501,20200601,20200701,20200801,20200901,20201001,20201101,20201201))
+
+
+covid_data_wrapped_tbl <- covid_data_tbl %>%
+  select(dateRep, month, year, cases, countriesAndTerritories) %>%
+  filter(year == 2020) %>%
+  filter(countriesAndTerritories %in% countries_of_interest) %>%
+  mutate(cases_date = dmy(dateRep))%>%
+  group_by(countriesAndTerritories) %>%
+  arrange(dmy(dateRep), .by_group = TRUE) %>%
+  mutate(cum_cases = cumsum(cases))%>%
+  ungroup()
+
+covid_data_wrapped_tbl %>%
+    
+    # Canvas
+    ggplot(aes(x = cases_date, y = cum_cases, color = countriesAndTerritories))  +
+    geom_line(size = 0.5, linetype = 1) + 
+    
+  scale_color_manual(values=c("#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FD6201"))+
+  scale_x_continuous(breaks = monate, 
+                     labels = month.abb[month(monate)],
+                     limits = c(ymd(20200101),ymd(20201210))) +
+  scale_y_continuous(labels = scales::dollar_format(scale = 1e-6, 
+                      prefix = "",
+                      suffix = "M ")) +
+  
+  labs(
+      title = "COVID-19 comfirmed cases worldwide",
+      x = "Year 2020",
+      y = "Cumultative cases",
+      color = "Country") +
+  
+  theme_bw() +
+  
+      theme(legend.position  = "bottom", 
+        legend.direction = "horizontal",
+        legend.title = element_text(size = 13),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(size =15),
+        axis.title.x =element_text(size=14),
+        axis.title.y =element_text(size=16),
+        axis.text.x = element_text(size = 11, hjust = 1 ,angle = 45),
+        axis.text.y = element_text(size = 11),
+        panel.grid = element_line(colour = "#9C9B9A", size = 0.2),
+        panel.background = element_blank(),  
+        plot.background = element_blank()
+        ) 
+  
+  
+```
+
+## Visualize the distribution of the mortality rate (deaths / population)
+
+```{r covidmortality, fig.width=15, fig.height=9}
+library(tidyverse)
+library(lubridate)
+library(maps)
+
+world <- map_data("world")
+covid_data_tbl <- read_csv("https://opendata.ecdc.europa.eu/covid19/casedistribution/csv")
+
+
+
+#preparing the data
+covid_data_wrapped_tbl <- covid_data_tbl %>%
+  select(dateRep, deaths, popData2019, countriesAndTerritories) %>%
+  mutate(cases_date = dmy(dateRep))%>%
+  
+  #mutate strings to fit world data 
+  mutate(across(countriesAndTerritories, str_replace_all, "_", " ")) %>%
+  mutate(countriesAndTerritories = case_when(
+
+    countriesAndTerritories == "United Kingdom" ~ "UK",
+    countriesAndTerritories == "United States of America" ~ "USA",
+    countriesAndTerritories == "Czechia" ~ "Czech Republic",
+    TRUE ~ countriesAndTerritories
+
+  )) %>%
+  group_by(countriesAndTerritories) %>%
+  arrange(dmy(dateRep), .by_group = TRUE) %>%
+  mutate(cum_deaths = cumsum(deaths))%>%
+  mutate(mortalityRate = max(cum_deaths)/popData2019) %>%
+  select(mortalityRate, countriesAndTerritories) %>%
+
+
+  #eliminate unnecessary entries add world data 
+  distinct() %>%
+  right_join(world, by = c("countriesAndTerritories" = "region")) 
+  
+
+
+# visualizing
+
+covid_data_wrapped_tbl %>%
+  
+  ggplot(aes(x = long, y = lat, group = group)) +
+  geom_polygon(aes(fill=mortalityRate), colour = "white") +
+  
+  
+  scale_fill_gradient(labels = scales::percent_format(accuracy = 0.001),
+                      low = "#FD7171", high = "#700A0A") +
+  #scale_x_continuous() %>%
+  
+
+
+  theme(legend.position  = "right", 
+        legend.direction = "vertical",
+        plot.title = element_text(size =15),
+        plot.subtitle = element_text(size = 13),
+        plot.caption = element_text(size = 12),
+        legend.title = element_text(size = 13),
+        legend.text = element_text(size = 12),
+        panel.grid = element_line(colour = "#AEABAB"),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.background = element_blank(),  
+        plot.background = element_blank()
+        )  +
+    labs(
+      title = "Cornfirmed COVID-19 death relative to the size of the population",
+      subtitle = "More than 1.2 Million confirmed COVID-19 deaths worldwide",
+      caption = "Date: 5/12/2020",
+      x = "",
+      y = "",
+      fill = "Mortality Rate")
+
+
+
+```
+
+
